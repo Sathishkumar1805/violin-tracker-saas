@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Custom animations used by Tailwind `animate-*` classes ── */
+@layer utilities {
+  /* Flame wobble on the streak banner */
+  .animate-flame {
+    animation: flame-wobble 2s ease-in-out infinite;
+  }
+  /* Radial glow pulse at goal completion */
+  .animate-glow-pulse {
+    animation: glow-pulse 2s ease-in-out infinite;
+  }
+  /* One-shot star pop on milestone unlock */
+  .animate-pop {
+    animation: star-pop 0.5s ease forwards;
+  }
+}
+
+@keyframes flame-wobble {
+  0%, 100% { transform: rotate(-4deg) scale(1); }
+  50%       { transform: rotate(4deg) scale(1.1); }
+}
+
+@keyframes glow-pulse {
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 1; }
+}
+
+@keyframes star-pop {
+  0%   { transform: scale(1); }
+  55%  { transform: scale(1.6); }
+  100% { transform: scale(1); }
+}
+
+/* iOS: prevent overscroll bounce which looks wrong in PWA mode */
+html, body {
+  overscroll-behavior: none;
+}
+
+/* Remove blue tap highlight on iOS */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
