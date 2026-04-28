@@ -36,33 +36,116 @@ export async function signInWithEmail(email: string, password: string) {
   return sb.auth.signInWithPassword({ email, password });
 }
 
+export async function signUpWithEmail(
+  email: string,
+  password: string,
+  displayName: string,
+) {
+  const sb = getSupabaseClient();
+  if (!sb) throw new Error('Supabase not configured');
+  return sb.auth.signUp({
+    email,
+    password,
+    options: { data: { display_name: displayName } },
+  });
+}
+
 export async function signOut() {
   const sb = getSupabaseClient();
   await sb?.auth.signOut();
 }
 
 // ── Profile ───────────────────────────────────────────────
-export async function getProfile(userId: string): Promise<Profile | null> {
+// Looks up by auth_user_id (Supabase auth UUID), not profiles.id
+export async function getProfile(authUserId: string): Promise<Profile | null> {
   const sb = getSupabaseClient();
   if (!sb) return null;
-  const { data } = await sb.from('profiles').select('*').eq('id', userId).single();
+  const { data } = await sb
+    .from('profiles')
+    .select('*')
+    .eq('auth_user_id', authUserId)
+    .single();
   return data ?? null;
 }
 
-export async function updateGems(userId: string, newTotal: number): Promise<void> {
+// Fetch by standalone profiles.id (used for child profiles)
+export async function getProfileById(profileId: string): Promise<Profile | null> {
+  const sb = getSupabaseClient();
+  if (!sb) return null;
+  const { data } = await sb
+    .from('profiles')
+    .select('*')
+    .eq('id', profileId)
+    .single();
+  return data ?? null;
+}
+
+export async function updateProfile(
+  profileId: string,
+  updates: Partial<Pick<Profile, 'display_name' | 'daily_goal_minutes' | 'timezone'>>,
+): Promise<void> {
   const sb = getSupabaseClient();
   if (!sb) return;
-  await sb.from('profiles').update({ gems: newTotal }).eq('id', userId);
+  await sb.from('profiles').update(updates).eq('id', profileId);
+}
+
+// Uses SECURITY DEFINER RPC to bypass RLS for gem updates on child profiles
+export async function updateGems(profileId: string, newTotal: number): Promise<void> {
+  const sb = getSupabaseClient();
+  if (!sb) return;
+  await sb.rpc('set_gems', { p_user_id: profileId, p_amount: newTotal });
+}
+
+// ── Child management ──────────────────────────────────────
+export async function getChildren(parentProfileId: string): Promise<Profile[]> {
+  const sb = getSupabaseClient();
+  if (!sb) return [];
+  const { data } = await sb
+    .from('profiles')
+    .select('*')
+    .eq('parent_id', parentProfileId)
+    .eq('role', 'student')
+    .order('created_at', { ascending: true });
+  return data ?? [];
+}
+
+export async function createChildProfile(
+  parentProfileId: string,
+  displayName: string,
+  dailyGoalMinutes = 20,
+  timezone = 'America/Chicago',
+): Promise<Profile | null> {
+  const sb = getSupabaseClient();
+  if (!sb) return null;
+  const { data } = await sb
+    .from('profiles')
+    .insert({
+      display_name: displayName,
+      role: 'student',
+      parent_id: parentProfileId,
+      daily_goal_minutes: dailyGoalMinutes,
+      timezone,
+      auth_user_id: null,
+    })
+    .select()
+    .single();
+  return data ?? null;
+}
+
+export async function deleteChildProfile(childProfileId: string): Promise<void> {
+  const sb = getSupabaseClient();
+  if (!sb) return;
+  await sb.from('profiles').delete().eq('id', childProfileId);
 }
 
 // ── Practice Sessions ─────────────────────────────────────
-export async function getSessions(userId: string): Promise<PracticeSession[]> {
+export async function getSessions(profileId: string): Promise<PracticeSession[]> {
   const sb = getSupabaseClient();
   if (!sb) return [];
   const { data } = await sb
     .from('practice_sessions')
     .select('*')
-    .eq('user_id', userId)
+    .eq('user_id', profileId)
     .order('started_at', { ascending: false });
   return data ?? [];
 }
@@ -77,13 +160,13 @@ export async function saveSession(
 }
 
 // ── Rewards ───────────────────────────────────────────────
-export async function getRewards(forUserId: string): Promise<Reward[]> {
+export async function getRewards(forProfileId: string): Promise<Reward[]> {
   const sb = getSupabaseClient();
   if (!sb) return [];
   const { data } = await sb
     .from('rewards')
     .select('*')
-    .eq('for_user', forUserId)
+    .eq('for_user', forProfileId)
     .order('gem_cost', { ascending: true });
   return data ?? [];
 }
@@ -116,13 +199,13 @@ export async function approveReward(rewardId: string): Promise<void> {
 }
 
 // ── Achievements ──────────────────────────────────────────
-export async function getAchievements(userId: string): Promise<Achievement[]> {
+export async function getAchievements(profileId: string): Promise<Achievement[]> {
   const sb = getSupabaseClient();
   if (!sb) return [];
   const { data } = await sb
     .from('achievements')
     .select('*')
-    .eq('user_id', userId)
+    .eq('user_id', profileId)
     .order('earned_at', { ascending: false });
   return data ?? [];
 }
@@ -132,18 +215,5 @@ export async function saveAchievement(
 ): Promise<void> {
   const sb = getSupabaseClient();
   if (!sb) return;
-  // UNIQUE(user_id, type) prevents duplicates at the DB level
   await sb.from('achievements').upsert(achievement, { onConflict: 'user_id,type' });
-}
-
-// ── Parent helpers ────────────────────────────────────────
-export async function getChildren(parentId: string): Promise<Profile[]> {
-  const sb = getSupabaseClient();
-  if (!sb) return [];
-  const { data } = await sb
-    .from('profiles')
-    .select('*')
-    .eq('parent_id', parentId)
-    .eq('role', 'student');
-  return data ?? [];
 }

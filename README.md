@@ -99,7 +99,7 @@ Visit **http://localhost:3000/login**, log in as Aradhiya → student dashboard.
 ```bash
 git init && git add . && git commit -m "initial commit"
 # Create repo on github.com then:
-git remote add origin https://github.com/YOUR-USERNAME/violin-tracker.git
+git remote add origin https://github.com/Sathishkumar1805/violin-tracker.git
 git push -u origin main
 ```
 

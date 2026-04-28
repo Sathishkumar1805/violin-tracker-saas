@@ -1,27 +1,36 @@
 -- ============================================================
--- Violin Practice Tracker — Supabase Database Schema
+-- Violin Practice Tracker (SaaS) — Supabase Database Schema
 -- Run in: Supabase Dashboard → SQL Editor → New query → Run
 -- ============================================================
 
 -- ── 1. Profiles ────────────────────────────────────────────
+-- profiles.id is a standalone UUID so parents can create child
+-- profiles without those children needing their own auth accounts.
+-- auth_user_id links to auth.users only for accounts that log in (parents).
+
 CREATE TABLE IF NOT EXISTS profiles (
-  id                   UUID REFERENCES auth.users(id) ON DELETE CASCADE PRIMARY KEY,
+  id                   UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  auth_user_id         UUID REFERENCES auth.users(id) ON DELETE CASCADE UNIQUE,
   display_name         TEXT NOT NULL,
   role                 TEXT NOT NULL DEFAULT 'student' CHECK (role IN ('student', 'parent')),
-  parent_id            UUID REFERENCES profiles(id) ON DELETE SET NULL,
+  parent_id            UUID REFERENCES profiles(id) ON DELETE CASCADE,
   daily_goal_minutes   INTEGER NOT NULL DEFAULT 20,
   gems                 INTEGER NOT NULL DEFAULT 0,
   timezone             TEXT NOT NULL DEFAULT 'America/Chicago',
   created_at           TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Auto-create profile on sign-up
+-- Auto-create a parent profile on sign-up
 CREATE OR REPLACE FUNCTION handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
-  INSERT INTO profiles (id, display_name, role)
-  VALUES (NEW.id, COALESCE(NEW.raw_user_meta_data->>'display_name', split_part(NEW.email,'@',1)), COALESCE(NEW.raw_user_meta_data->>'role','student'))
-  ON CONFLICT (id) DO NOTHING;
+  INSERT INTO profiles (auth_user_id, display_name, role)
+  VALUES (
+    NEW.id,
+    COALESCE(NEW.raw_user_meta_data->>'display_name', split_part(NEW.email,'@',1)),
+    'parent'
+  )
+  ON CONFLICT (auth_user_id) DO NOTHING;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
@@ -29,6 +38,12 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users FOR EACH ROW EXECUTE FUNCTION handle_new_user();
+
+-- Helper: resolve auth.uid() → profiles.id (used in all RLS policies)
+CREATE OR REPLACE FUNCTION get_current_profile_id()
+RETURNS UUID AS $$
+  SELECT id FROM profiles WHERE auth_user_id = auth.uid() LIMIT 1;
+$$ LANGUAGE SQL SECURITY DEFINER STABLE;
 
 -- ── 2. Practice Sessions ───────────────────────────────────
 CREATE TABLE IF NOT EXISTS practice_sessions (
@@ -67,26 +82,67 @@ CREATE TABLE IF NOT EXISTS achievements (
 );
 
 -- ── 5. Row-Level Security ──────────────────────────────────
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE profiles          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE practice_sessions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE rewards ENABLE ROW LEVEL SECURITY;
-ALTER TABLE achievements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE rewards           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE achievements      ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "profile: own row" ON profiles FOR ALL USING (auth.uid() = id);
-CREATE POLICY "profile: parent reads children" ON profiles FOR SELECT USING (parent_id = auth.uid());
-CREATE POLICY "session: own rows" ON practice_sessions FOR ALL USING (auth.uid() = user_id);
-CREATE POLICY "session: parent reads children" ON practice_sessions FOR SELECT USING (user_id IN (SELECT id FROM profiles WHERE parent_id = auth.uid()));
-CREATE POLICY "reward: creator or recipient" ON rewards FOR ALL USING (auth.uid() = created_by OR auth.uid() = for_user);
-CREATE POLICY "achievement: own rows" ON achievements FOR ALL USING (auth.uid() = user_id);
-CREATE POLICY "achievement: parent reads children" ON achievements FOR SELECT USING (user_id IN (SELECT id FROM profiles WHERE parent_id = auth.uid()));
+-- Profiles: parent owns their own row
+CREATE POLICY "profile: own row"
+  ON profiles FOR ALL
+  USING (auth_user_id = auth.uid());
+
+-- Profiles: parent can read children
+CREATE POLICY "profile: parent reads children"
+  ON profiles FOR SELECT
+  USING (parent_id = get_current_profile_id());
+
+-- Profiles: parent can insert child profiles (parent_id must match caller)
+CREATE POLICY "profile: parent inserts children"
+  ON profiles FOR INSERT
+  WITH CHECK (parent_id = get_current_profile_id());
+
+-- Profiles: parent can update and delete children
+CREATE POLICY "profile: parent manages children"
+  ON profiles FOR UPDATE
+  USING (parent_id = get_current_profile_id());
+
+CREATE POLICY "profile: parent deletes children"
+  ON profiles FOR DELETE
+  USING (parent_id = get_current_profile_id());
+
+-- Sessions: parent fully manages all children's sessions (for Practice Mode)
+CREATE POLICY "session: parent manages children"
+  ON practice_sessions FOR ALL
+  USING (user_id IN (
+    SELECT id FROM profiles WHERE parent_id = get_current_profile_id()
+  ));
+
+-- Rewards: parent (creator) or child (recipient) can read/write
+CREATE POLICY "reward: creator or recipient"
+  ON rewards FOR ALL
+  USING (
+    created_by = get_current_profile_id()
+    OR for_user = get_current_profile_id()
+    OR created_by IN (SELECT id FROM profiles WHERE parent_id = get_current_profile_id())
+    OR for_user  IN (SELECT id FROM profiles WHERE parent_id = get_current_profile_id())
+  );
+
+-- Achievements: parent manages children's achievements
+CREATE POLICY "achievement: parent manages children"
+  ON achievements FOR ALL
+  USING (user_id IN (
+    SELECT id FROM profiles WHERE parent_id = get_current_profile_id()
+  ));
 
 -- ── 6. Indexes ─────────────────────────────────────────────
+CREATE INDEX IF NOT EXISTS idx_profiles_auth_user    ON profiles(auth_user_id);
+CREATE INDEX IF NOT EXISTS idx_profiles_parent       ON profiles(parent_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_started ON practice_sessions(user_id, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_rewards_for_user ON rewards(for_user, is_active);
-CREATE INDEX IF NOT EXISTS idx_achievements_user ON achievements(user_id);
-CREATE INDEX IF NOT EXISTS idx_profiles_parent ON profiles(parent_id);
+CREATE INDEX IF NOT EXISTS idx_rewards_for_user      ON rewards(for_user, is_active);
+CREATE INDEX IF NOT EXISTS idx_achievements_user     ON achievements(user_id);
 
--- ── 7. Helper: increment gems ──────────────────────────────
+-- ── 7. Helper: increment gems (SECURITY DEFINER — bypasses RLS safely) ─
 CREATE OR REPLACE FUNCTION increment_gems(p_user_id UUID, p_amount INTEGER)
 RETURNS VOID AS $$
 BEGIN
@@ -95,7 +151,11 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 GRANT EXECUTE ON FUNCTION increment_gems TO authenticated;
 
--- ── First-time setup (run after inviting users) ─────────────
--- UPDATE profiles SET role='parent' WHERE id='PARENT-UUID';
--- UPDATE profiles SET parent_id='PARENT-UUID' WHERE id='STUDENT-UUID';
--- UPDATE profiles SET display_name='Aradhiya', timezone='America/Chicago' WHERE id='STUDENT-UUID';
+-- ── 8. Helper: set gems to an absolute value ───────────────
+CREATE OR REPLACE FUNCTION set_gems(p_user_id UUID, p_amount INTEGER)
+RETURNS VOID AS $$
+BEGIN
+  UPDATE profiles SET gems = p_amount WHERE id = p_user_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+GRANT EXECUTE ON FUNCTION set_gems TO authenticated;

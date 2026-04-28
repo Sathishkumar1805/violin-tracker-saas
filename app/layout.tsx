@@ -25,18 +25,16 @@ const nunitoSans = Nunito_Sans({
 })
 
 export const metadata: Metadata = {
-  title: "Aradhiya's Violin Tracker 🎻",
-  description: 'Track your daily violin practice, earn gems, and unlock rewards!',
+  title: 'Violin Practice Tracker 🎻',
+  description: 'Track your child\'s daily violin practice, earn gems, and unlock rewards!',
   manifest: '/manifest.json',
-  // iOS PWA meta tags
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
     title: 'Violin Tracker',
   },
-  // Open Graph for sharing
   openGraph: {
-    title: "Aradhiya's Violin Tracker",
+    title: 'Violin Practice Tracker',
     description: 'Daily violin practice tracker with streaks and rewards!',
     type: 'website',
   },
