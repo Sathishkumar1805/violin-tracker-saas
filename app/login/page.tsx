@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Eye, EyeOff, Lock, Mail } from 'lucide-react';
-import { signInWithEmail, IS_MOCK } from '@/lib/supabase';
+import { signInWithEmail, getProfile, IS_MOCK } from '@/lib/supabase';
 import Link from 'next/link';
 
 export default function LoginPage() {
@@ -22,10 +22,11 @@ export default function LoginPage() {
       setTimeout(() => router.push('/parent?mock=true'), 600);
       return;
     }
-    const { error: authError } = await signInWithEmail(email, password);
+    const { error: authError, data } = await signInWithEmail(email, password);
     setLoading(false);
     if (authError) { setError(authError.message); return; }
-    router.push('/parent');
+    const profile = await getProfile(data.user!.id);
+    router.push(profile?.role === 'student' ? '/dashboard' : '/parent');
   }
 
   return (

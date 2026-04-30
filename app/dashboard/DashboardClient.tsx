@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { LogOut } from 'lucide-react';
-import { IS_MOCK, getSupabaseClient, getProfile, getSessions, getRewards, getAchievements } from '@/lib/supabase';
+import { IS_MOCK, getSupabaseClient, getProfile, getSessions, getRewards, getAchievements, claimFamilyCode } from '@/lib/supabase';
 import { MOCK_PROFILE, MOCK_SESSIONS, MOCK_REWARDS, MOCK_ACHIEVEMENTS } from '@/lib/mock-data';
 import { calculateStreak, getWeekPracticeStatus, getPracticedMinutesToday, getPracticedMinutesThisMonth } from '@/lib/streak';
 import { evaluateChallenges } from '@/lib/challenges';
@@ -28,6 +28,11 @@ export default function DashboardClient() {
   const [activeTab,    setActiveTab]    = useState<Tab>('practice');
   const [loading,      setLoading]      = useState(true);
 
+  // Join family
+  const [joinCode,     setJoinCode]     = useState('');
+  const [joining,      setJoining]      = useState(false);
+  const [joinResult,   setJoinResult]   = useState<{ ok: boolean; msg: string } | null>(null);
+
   const loadData = useCallback(async () => {
     if (isMock) {
       setProfile(MOCK_PROFILE); setSessions(MOCK_SESSIONS);
@@ -38,11 +43,12 @@ export default function DashboardClient() {
     if (!sb) { router.push('/login'); return; }
     const { data: { user } } = await sb.auth.getUser();
     if (!user) { router.push('/login'); return; }
-    const [p, s, r, a] = await Promise.all([
-      getProfile(user.id), getSessions(user.id), getRewards(user.id), getAchievements(user.id),
-    ]);
+    const p = await getProfile(user.id);
     if (!p) { router.push('/login'); return; }
     if (p.role === 'parent') { router.push('/parent'); return; }
+    const [s, r, a] = await Promise.all([
+      getSessions(p.id), getRewards(p.id), getAchievements(p.id),
+    ]);
     setProfile(p); setSessions(s); setRewards(r); setAchievements(a);
     setLoading(false);
   }, [isMock, router]);
@@ -67,6 +73,29 @@ export default function DashboardClient() {
     if (!reward || !profile || profile.gems < reward.gem_cost) return;
     setRewards(prev => prev.map(r => r.id === rewardId ? { ...r, redeemed_at: new Date().toISOString() } : r));
     setProfile(prev => prev ? { ...prev, gems: prev.gems - reward.gem_cost } : prev);
+  }
+
+  async function handleJoinFamily(e: React.FormEvent) {
+    e.preventDefault();
+    setJoining(true);
+    setJoinResult(null);
+    if (isMock) {
+      setTimeout(() => {
+        setJoinResult({ ok: true, msg: "Joined Demo Parent's family!" });
+        setJoining(false);
+        setProfile(prev => prev ? { ...prev, parent_id: 'mock-parent' } : prev);
+      }, 800);
+      return;
+    }
+    const result = await claimFamilyCode(joinCode);
+    setJoining(false);
+    if (result.success) {
+      setJoinResult({ ok: true, msg: `Joined ${result.parentName}'s family!` });
+      setProfile(prev => prev ? { ...prev, parent_id: 'linked' } : prev);
+      setJoinCode('');
+    } else {
+      setJoinResult({ ok: false, msg: result.error ?? 'Invalid code' });
+    }
   }
 
   async function signOut() {
@@ -107,6 +136,37 @@ export default function DashboardClient() {
 
       <main className="max-w-md mx-auto px-4 pb-24 space-y-3 pt-3">
         <StreakBanner streak={streak} weekStatus={weekStatus} />
+
+        {!profile.parent_id && (
+          <div className="bg-indigo-50 rounded-2xl p-4 border border-indigo-100">
+            <p className="text-sm font-black text-indigo-900 mb-1" style={{ fontFamily: 'Nunito, sans-serif' }}>Join Your Family</p>
+            <p className="text-xs text-indigo-400 font-medium mb-3">Enter the 6-character code your parent shared with you.</p>
+            {joinResult?.ok ? (
+              <p className="text-sm font-bold text-green-600 text-center py-1">{joinResult.msg}</p>
+            ) : (
+              <form onSubmit={handleJoinFamily} className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="e.g. VLN4X2"
+                  value={joinCode}
+                  onChange={e => setJoinCode(e.target.value.toUpperCase())}
+                  maxLength={6}
+                  required
+                  className="flex-1 px-3 py-2 rounded-xl border border-indigo-200 text-sm font-black tracking-widest text-center uppercase focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  style={{ fontFamily: 'monospace' }}
+                />
+                <button type="submit" disabled={joining || joinCode.length < 6}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-black active:scale-95 disabled:opacity-50 transition-all"
+                  style={{ fontFamily: 'Nunito, sans-serif' }}>
+                  {joining ? '…' : 'Join'}
+                </button>
+              </form>
+            )}
+            {joinResult && !joinResult.ok && (
+              <p className="text-xs text-red-500 font-semibold mt-2 text-center">{joinResult.msg}</p>
+            )}
+          </div>
+        )}
 
         <div className="flex bg-white rounded-2xl p-1 border border-violet-100 shadow-sm">
           {(['practice', 'challenges', 'rewards'] as Tab[]).map(tab => (

@@ -6,8 +6,11 @@ import { Eye, EyeOff, Lock, Mail, User } from 'lucide-react';
 import { signUpWithEmail, IS_MOCK } from '@/lib/supabase';
 import Link from 'next/link';
 
+type Role = 'parent' | 'student';
+
 export default function SignupPage() {
   const router = useRouter();
+  const [role,     setRole]     = useState<Role>('parent');
   const [name,     setName]     = useState('');
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
@@ -21,14 +24,15 @@ export default function SignupPage() {
     setLoading(true);
 
     if (IS_MOCK) {
-      setTimeout(() => router.push('/onboarding?mock=true'), 600);
+      const dest = role === 'parent' ? '/onboarding?mock=true' : '/dashboard?mock=true';
+      setTimeout(() => router.push(dest), 600);
       return;
     }
 
-    const { error: authError } = await signUpWithEmail(email, password, name);
+    const { error: authError } = await signUpWithEmail(email, password, name, role);
     setLoading(false);
     if (authError) { setError(authError.message); return; }
-    router.push('/onboarding');
+    router.push(role === 'parent' ? '/onboarding' : '/dashboard');
   }
 
   return (
@@ -41,22 +45,39 @@ export default function SignupPage() {
           <h1 className="text-3xl font-black text-indigo-900" style={{ fontFamily: 'Nunito, sans-serif' }}>
             Create Account
           </h1>
-          <p className="text-indigo-400 font-semibold mt-1 text-sm">Set up your family in 2 minutes</p>
+          <p className="text-indigo-400 font-semibold mt-1 text-sm">
+            {role === 'parent' ? 'Set up your family in 2 minutes' : 'Start tracking your practice'}
+          </p>
         </div>
 
         {IS_MOCK && (
           <div className="mb-5 p-3 bg-amber-50 border border-amber-200 rounded-2xl text-center">
             <p className="text-amber-700 text-sm font-bold">🎭 Mock Mode Active</p>
-            <p className="text-amber-600 text-xs mt-0.5">Just tap Sign Up to preview the onboarding flow</p>
+            <p className="text-amber-600 text-xs mt-0.5">Just tap Sign Up to preview the flow</p>
           </div>
         )}
+
+        {/* Role toggle */}
+        <div className="flex bg-white rounded-2xl p-1 border border-indigo-100 shadow-sm mb-5">
+          {(['parent', 'student'] as Role[]).map(r => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => setRole(r)}
+              className={`flex-1 py-2.5 rounded-xl text-sm font-black transition-all ${role === r ? 'bg-indigo-600 text-white shadow-sm' : 'text-indigo-400'}`}
+              style={{ fontFamily: 'Nunito, sans-serif' }}
+            >
+              {r === 'parent' ? '👩‍👧 Parent' : '🎻 Student'}
+            </button>
+          ))}
+        </div>
 
         <form onSubmit={handleSignup} className="space-y-3">
           <div className="relative">
             <User className="absolute left-4 top-1/2 -translate-y-1/2 text-indigo-300" size={17} />
             <input
               type="text"
-              placeholder="Your name (e.g. Alex)"
+              placeholder={role === 'parent' ? 'Your name (e.g. Alex)' : 'Your name (e.g. Emma)'}
               value={name}
               onChange={e => setName(e.target.value)}
               required={!IS_MOCK}
@@ -98,7 +119,7 @@ export default function SignupPage() {
             className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-2xl font-black text-base shadow-lg shadow-indigo-200 transition-all disabled:opacity-60"
             style={{ fontFamily: 'Nunito, sans-serif' }}
           >
-            {loading ? '⏳ Creating account…' : '🎻 Sign Up as Parent'}
+            {loading ? '⏳ Creating account…' : role === 'parent' ? '👩‍👧 Sign Up as Parent' : '🎻 Sign Up as Student'}
           </button>
         </form>
 

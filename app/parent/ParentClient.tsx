@@ -2,11 +2,11 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { CheckCircle, Plus, LogOut, Play, UserPlus, Trash2 } from 'lucide-react';
+import { CheckCircle, Plus, LogOut, Play, UserPlus, Trash2, Copy, RefreshCw } from 'lucide-react';
 import {
   IS_MOCK, getSupabaseClient, getProfile, getChildren,
   getSessions, getRewards, approveReward, createReward,
-  createChildProfile, deleteChildProfile,
+  createChildProfile, deleteChildProfile, generateFamilyCode,
 } from '@/lib/supabase';
 import {
   MOCK_PARENT_PROFILE, MOCK_CHILDREN,
@@ -38,6 +38,11 @@ export default function ParentClient() {
   const [cost,     setCost]     = useState(50);
   const [emoji,    setEmoji]    = useState('🎁');
   const [saving,   setSaving]   = useState(false);
+
+  // Family code
+  const [familyCode,     setFamilyCode]     = useState<string | null>(null);
+  const [generatingCode, setGeneratingCode] = useState(false);
+  const [codeCopied,     setCodeCopied]     = useState(false);
 
   // Add child form
   const [showAddChild, setShowAddChild] = useState(false);
@@ -75,6 +80,7 @@ export default function ParentClient() {
     if (!p || p.role !== 'parent') { router.push('/dashboard'); return; }
     const kids = await getChildren(p.id);
     setParent(p);
+    setFamilyCode(p.family_code ?? null);
     setChildren(kids);
     if (kids.length === 0) { router.push('/onboarding'); return; }
     const first = kids[0];
@@ -155,6 +161,21 @@ export default function ParentClient() {
     setRewards(prev => [...prev, draft]);
     setTitle(''); setDesc(''); setCost(50); setEmoji('🎁');
     setShowRewardForm(false); setSaving(false);
+  }
+
+  async function handleGenerateCode() {
+    if (!parent) return;
+    setGeneratingCode(true);
+    const code = isMock ? 'VLN4X2' : await generateFamilyCode(parent.id);
+    if (code) setFamilyCode(code);
+    setGeneratingCode(false);
+  }
+
+  async function handleCopyCode() {
+    if (!familyCode) return;
+    await navigator.clipboard.writeText(familyCode);
+    setCodeCopied(true);
+    setTimeout(() => setCodeCopied(false), 2000);
   }
 
   if (loading) return (
@@ -242,6 +263,36 @@ export default function ParentClient() {
               </div>
             </form>
           )}
+        </div>
+
+        {/* ── Family Code ───────────────────────────────── */}
+        <div className="bg-white rounded-3xl p-4 border border-violet-100">
+          <h3 className="text-sm font-black text-indigo-900 mb-1" style={{ fontFamily: 'Nunito, sans-serif' }}>Family Code</h3>
+          <p className="text-xs text-indigo-400 font-medium mb-3">Share this code with your child so they can join your family on their own account.</p>
+          {familyCode ? (
+            <div className="flex items-center gap-2">
+              <span className="flex-1 text-center text-2xl font-black tracking-widest text-indigo-900 bg-violet-50 border border-violet-200 rounded-2xl py-2 px-4" style={{ fontFamily: 'monospace' }}>
+                {familyCode}
+              </span>
+              <button onClick={handleCopyCode}
+                className="p-2.5 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95 transition-all"
+                title="Copy code">
+                <Copy size={16} />
+              </button>
+              <button onClick={handleGenerateCode} disabled={generatingCode}
+                className="p-2.5 rounded-xl bg-violet-100 text-indigo-500 hover:bg-violet-200 active:scale-95 transition-all disabled:opacity-50"
+                title="Generate new code">
+                <RefreshCw size={16} className={generatingCode ? 'animate-spin' : ''} />
+              </button>
+            </div>
+          ) : (
+            <button onClick={handleGenerateCode} disabled={generatingCode}
+              className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-2xl text-sm font-black transition-all disabled:opacity-60"
+              style={{ fontFamily: 'Nunito, sans-serif' }}>
+              {generatingCode ? '⏳ Generating…' : '🔑 Generate Code'}
+            </button>
+          )}
+          {codeCopied && <p className="text-xs text-green-600 font-bold text-center mt-2">Copied!</p>}
         </div>
 
         {/* ── Practice Mode button ───────────────────────── */}

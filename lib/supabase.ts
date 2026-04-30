@@ -40,13 +40,14 @@ export async function signUpWithEmail(
   email: string,
   password: string,
   displayName: string,
+  role: 'parent' | 'student' = 'parent',
 ) {
   const sb = getSupabaseClient();
   if (!sb) throw new Error('Supabase not configured');
   return sb.auth.signUp({
     email,
     password,
-    options: { data: { display_name: displayName } },
+    options: { data: { display_name: displayName, role } },
   });
 }
 
@@ -136,6 +137,24 @@ export async function deleteChildProfile(childProfileId: string): Promise<void> 
   const sb = getSupabaseClient();
   if (!sb) return;
   await sb.from('profiles').delete().eq('id', childProfileId);
+}
+
+// ── Family invite code ────────────────────────────────────
+export async function generateFamilyCode(parentProfileId: string): Promise<string | null> {
+  const sb = getSupabaseClient();
+  if (!sb) return null;
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const code = Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  const { error } = await sb.from('profiles').update({ family_code: code }).eq('id', parentProfileId);
+  return error ? null : code;
+}
+
+export async function claimFamilyCode(code: string): Promise<{ success: boolean; parentName?: string; error?: string }> {
+  const sb = getSupabaseClient();
+  if (!sb) return { success: false, error: 'Not configured' };
+  const { data, error } = await sb.rpc('claim_family_code', { p_code: code.trim().toUpperCase() });
+  if (error) return { success: false, error: error.message };
+  return data as { success: boolean; parentName?: string; error?: string };
 }
 
 // ── Practice Sessions ─────────────────────────────────────

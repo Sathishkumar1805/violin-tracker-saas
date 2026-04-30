@@ -7,13 +7,14 @@ export type UserRole = 'student' | 'parent';
 /** Parent account or managed child profile. auth_user_id is null for children. */
 export interface Profile {
   id: string;                  // standalone UUID (not tied to auth.users)
-  auth_user_id: string | null; // only set for accounts that can log in (parents)
+  auth_user_id: string | null; // only set for accounts that can log in
   display_name: string;
   role: UserRole;
   parent_id: string | null;    // null for parents; child profiles point to their parent
   daily_goal_minutes: number;
   gems: number;
   timezone: string;            // IANA timezone string, e.g. "America/Chicago"
+  family_code: string | null;  // parents only — shareable code for students to join
   created_at: string;
 }
 

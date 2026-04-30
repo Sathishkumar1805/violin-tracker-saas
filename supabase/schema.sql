@@ -17,10 +17,14 @@ CREATE TABLE IF NOT EXISTS profiles (
   daily_goal_minutes   INTEGER NOT NULL DEFAULT 20,
   gems                 INTEGER NOT NULL DEFAULT 0,
   timezone             TEXT NOT NULL DEFAULT 'America/Chicago',
+  family_code          TEXT UNIQUE,
   created_at           TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Auto-create a parent profile on sign-up
+-- Add family_code to existing databases
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS family_code TEXT UNIQUE;
+
+-- Auto-create a profile on sign-up; role comes from signup metadata (default 'parent')
 CREATE OR REPLACE FUNCTION handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -28,7 +32,7 @@ BEGIN
   VALUES (
     NEW.id,
     COALESCE(NEW.raw_user_meta_data->>'display_name', split_part(NEW.email,'@',1)),
-    'parent'
+    COALESCE(NEW.raw_user_meta_data->>'role', 'parent')
   )
   ON CONFLICT (auth_user_id) DO NOTHING;
   RETURN NEW;
@@ -92,6 +96,11 @@ CREATE POLICY "profile: own row"
   ON profiles FOR ALL
   USING (auth_user_id = auth.uid());
 
+-- Profiles: any authenticated user can find a parent by family_code (for join flow)
+CREATE POLICY "profile: read by family code"
+  ON profiles FOR SELECT
+  USING (family_code IS NOT NULL AND role = 'parent');
+
 -- Profiles: parent can read children
 CREATE POLICY "profile: parent reads children"
   ON profiles FOR SELECT
@@ -118,6 +127,11 @@ CREATE POLICY "session: parent manages children"
     SELECT id FROM profiles WHERE parent_id = get_current_profile_id()
   ));
 
+-- Sessions: student with own auth account manages their own sessions
+CREATE POLICY "session: student owns own"
+  ON practice_sessions FOR ALL
+  USING (user_id = get_current_profile_id());
+
 -- Rewards: parent (creator) or child (recipient) can read/write
 CREATE POLICY "reward: creator or recipient"
   ON rewards FOR ALL
@@ -134,6 +148,11 @@ CREATE POLICY "achievement: parent manages children"
   USING (user_id IN (
     SELECT id FROM profiles WHERE parent_id = get_current_profile_id()
   ));
+
+-- Achievements: student with own auth account manages their own achievements
+CREATE POLICY "achievement: student owns own"
+  ON achievements FOR ALL
+  USING (user_id = get_current_profile_id());
 
 -- ── 6. Indexes ─────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_profiles_auth_user    ON profiles(auth_user_id);
@@ -159,3 +178,30 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 GRANT EXECUTE ON FUNCTION set_gems TO authenticated;
+
+-- ── 9. Helper: student claims a family invite code ─────────
+CREATE OR REPLACE FUNCTION claim_family_code(p_code TEXT)
+RETURNS JSONB AS $$
+DECLARE
+  v_parent_id   UUID;
+  v_parent_name TEXT;
+  v_caller_id   UUID;
+BEGIN
+  SELECT id, display_name INTO v_parent_id, v_parent_name
+    FROM profiles WHERE family_code = upper(p_code) AND role = 'parent' LIMIT 1;
+  IF v_parent_id IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Invalid code');
+  END IF;
+
+  SELECT id INTO v_caller_id FROM profiles WHERE auth_user_id = auth.uid() LIMIT 1;
+  IF v_caller_id IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Not authenticated');
+  END IF;
+
+  UPDATE profiles SET parent_id = v_parent_id
+    WHERE id = v_caller_id AND role = 'student' AND parent_id IS NULL;
+
+  RETURN jsonb_build_object('success', true, 'parentName', v_parent_name);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+GRANT EXECUTE ON FUNCTION claim_family_code TO authenticated;
