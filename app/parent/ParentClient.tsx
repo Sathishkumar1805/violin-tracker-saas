@@ -13,9 +13,10 @@ import {
   MOCK_SESSIONS, MOCK_SESSIONS_2,
   MOCK_REWARDS, MOCK_REWARDS_2,
 } from '@/lib/mock-data';
-import { calculateStreak, getPracticedMinutesToday, getPracticedMinutesThisMonth, getWeekPracticeStatus } from '@/lib/streak';
+import { calculateStreak, getPracticedMinutesToday, getPracticedMinutesThisMonth } from '@/lib/streak';
 import type { Profile, PracticeSession, Reward } from '@/lib/types';
 import DonationBanner from '@/components/DonationBanner';
+import WeeklyHistory from '@/components/WeeklyHistory';
 
 const EMOJI_OPTS = ['🎬','🎮','🍦','🍕','🌙','🎁','🏖️','🍫','📚','🎪'];
 
@@ -43,6 +44,8 @@ export default function ParentClient() {
   const [familyCode,     setFamilyCode]     = useState<string | null>(null);
   const [generatingCode, setGeneratingCode] = useState(false);
   const [codeCopied,     setCodeCopied]     = useState(false);
+
+  const [weekOffset, setWeekOffset] = useState(0);
 
   // Add child form
   const [showAddChild, setShowAddChild] = useState(false);
@@ -94,6 +97,7 @@ export default function ParentClient() {
 
   async function handleSelectChild(childId: string) {
     setActiveChildId(childId);
+    setWeekOffset(0);
     await loadChildData(childId);
   }
 
@@ -188,7 +192,6 @@ export default function ParentClient() {
   const streak    = calculateStreak(sessions, tz);
   const todayMins = getPracticedMinutesToday(sessions, tz);
   const monthMins = getPracticedMinutesThisMonth(sessions, tz);
-  const week      = getWeekPracticeStatus(sessions, tz);
   const pending   = rewards.filter(r => r.redeemed_at && !r.approved_at);
 
   return (
@@ -323,21 +326,15 @@ export default function ParentClient() {
               ))}
             </div>
 
-            {/* Week */}
-            <div className="bg-white rounded-3xl p-4 border border-violet-100">
-              <h3 className="text-sm font-black text-indigo-900 mb-3" style={{ fontFamily: 'Nunito, sans-serif' }}>
-                This Week — {activeChild.display_name}
-              </h3>
-              <div className="flex gap-2 justify-between">
-                {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((d, i) => (
-                  <div key={d} className="flex flex-col items-center gap-1">
-                    <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-black ${week[i] ? 'bg-green-100 text-green-700 border-2 border-green-400' : 'bg-violet-50 text-indigo-300 border border-violet-100'}`}
-                      style={{ fontFamily: 'Nunito, sans-serif' }}>{week[i] ? '✓' : d[0]}</div>
-                    <span className="text-xs text-indigo-300 font-semibold">{d.slice(0,2)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
+            {/* Weekly history with navigation */}
+            <WeeklyHistory
+              sessions={sessions}
+              timezone={tz}
+              weekOffset={weekOffset}
+              onWeekChange={setWeekOffset}
+              goalMinutes={activeChild.daily_goal_minutes ?? 20}
+              childName={activeChild.display_name}
+            />
 
             {/* Pending approvals */}
             {pending.length > 0 && (
