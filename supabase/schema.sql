@@ -205,3 +205,18 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 GRANT EXECUTE ON FUNCTION claim_family_code TO authenticated;
+
+-- ── 10. Mascot & Push Notifications ───────────────────────
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS mascot_type TEXT DEFAULT 'bird';
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id           UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id      UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL UNIQUE,
+  subscription JSONB NOT NULL,
+  created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE push_subscriptions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "push: own subscriptions"
+  ON push_subscriptions FOR ALL
+  USING (user_id = get_current_profile_id());
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);

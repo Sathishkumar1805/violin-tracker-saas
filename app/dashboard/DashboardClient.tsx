@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { LogOut } from 'lucide-react';
-import { IS_MOCK, getSupabaseClient, getProfile, getSessions, getRewards, getAchievements, claimFamilyCode } from '@/lib/supabase';
+import { IS_MOCK, getSupabaseClient, getProfile, getSessions, getRewards, getAchievements, claimFamilyCode, updateMascot } from '@/lib/supabase';
 import { MOCK_PROFILE, MOCK_SESSIONS, MOCK_REWARDS, MOCK_ACHIEVEMENTS } from '@/lib/mock-data';
 import { calculateStreak, getWeekPracticeStatus, getPracticedMinutesToday, getPracticedMinutesThisMonth } from '@/lib/streak';
 import { evaluateChallenges } from '@/lib/challenges';
@@ -29,13 +29,14 @@ export default function DashboardClient() {
   const [achievements, setAchievements] = useState<Achievement[]>([]);
   const [activeTab,    setActiveTab]    = useState<Tab>('practice');
   const [loading,      setLoading]      = useState(true);
-
-  const [mascotType, setMascotType] = useState<MascotType>('bird');
+  const [mascotType,   setMascotType]   = useState<MascotType>('bird');
+  const [pushEnabled,  setPushEnabled]  = useState(false);
+  const [pushLoading,  setPushLoading]  = useState(false);
 
   // Join family
-  const [joinCode,     setJoinCode]     = useState('');
-  const [joining,      setJoining]      = useState(false);
-  const [joinResult,   setJoinResult]   = useState<{ ok: boolean; msg: string } | null>(null);
+  const [joinCode,   setJoinCode]   = useState('');
+  const [joining,    setJoining]    = useState(false);
+  const [joinResult, setJoinResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const loadData = useCallback(async () => {
     if (isMock) {
@@ -59,14 +60,40 @@ export default function DashboardClient() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // Phase 2: sync mascot from profile (DB wins over localStorage)
   useEffect(() => {
-    const saved = localStorage.getItem('violin-mascot') as MascotType | null;
-    if (saved) setMascotType(saved);
+    if (profile?.mascot_type) {
+      setMascotType(profile.mascot_type as MascotType);
+      localStorage.setItem('violin-mascot', profile.mascot_type);
+    } else {
+      const saved = localStorage.getItem('violin-mascot') as MascotType | null;
+      if (saved) setMascotType(saved);
+    }
+  }, [profile]);
+
+  // Phase 3: check push status on mount
+  useEffect(() => {
+    import('@/lib/push').then(({ checkPushStatus }) => checkPushStatus().then(setPushEnabled));
   }, []);
 
-  function handleMascotChange(type: MascotType) {
+  async function handleMascotChange(type: MascotType) {
     setMascotType(type);
     localStorage.setItem('violin-mascot', type);
+    if (!isMock && profile) await updateMascot(profile.id, type);
+  }
+
+  async function handleTogglePush() {
+    if (!profile) return;
+    setPushLoading(true);
+    const { subscribeToPush, unsubscribeFromPush } = await import('@/lib/push');
+    if (pushEnabled) {
+      await unsubscribeFromPush(profile.id);
+      setPushEnabled(false);
+    } else {
+      const ok = await subscribeToPush(profile.id);
+      setPushEnabled(ok);
+    }
+    setPushLoading(false);
   }
 
   const tz           = profile?.timezone ?? 'America/Chicago';
@@ -92,8 +119,7 @@ export default function DashboardClient() {
 
   async function handleJoinFamily(e: React.FormEvent) {
     e.preventDefault();
-    setJoining(true);
-    setJoinResult(null);
+    setJoining(true); setJoinResult(null);
     if (isMock) {
       setTimeout(() => {
         setJoinResult({ ok: true, msg: "Joined Demo Parent's family!" });
@@ -160,16 +186,10 @@ export default function DashboardClient() {
               <p className="text-sm font-bold text-green-600 text-center py-1">{joinResult.msg}</p>
             ) : (
               <form onSubmit={handleJoinFamily} className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="e.g. VLN4X2"
-                  value={joinCode}
-                  onChange={e => setJoinCode(e.target.value.toUpperCase())}
-                  maxLength={6}
-                  required
+                <input type="text" placeholder="e.g. VLN4X2" value={joinCode}
+                  onChange={e => setJoinCode(e.target.value.toUpperCase())} maxLength={6} required
                   className="flex-1 px-3 py-2 rounded-xl border border-indigo-200 text-sm font-black tracking-widest text-center uppercase focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                  style={{ fontFamily: 'monospace' }}
-                />
+                  style={{ fontFamily: 'monospace' }} />
                 <button type="submit" disabled={joining || joinCode.length < 6}
                   className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-black active:scale-95 disabled:opacity-50 transition-all"
                   style={{ fontFamily: 'Nunito, sans-serif' }}>
@@ -177,9 +197,7 @@ export default function DashboardClient() {
                 </button>
               </form>
             )}
-            {joinResult && !joinResult.ok && (
-              <p className="text-xs text-red-500 font-semibold mt-2 text-center">{joinResult.msg}</p>
-            )}
+            {joinResult && !joinResult.ok && <p className="text-xs text-red-500 font-semibold mt-2 text-center">{joinResult.msg}</p>}
           </div>
         )}
 
@@ -197,6 +215,22 @@ export default function DashboardClient() {
           <>
             <Mascot mascotType={mascotType} mood={mascotMood} streak={streak} />
             <MascotPicker current={mascotType} onChange={handleMascotChange} />
+
+            {/* Practice reminder toggle */}
+            <div className="flex items-center justify-between bg-white px-4 py-3 rounded-2xl border border-violet-100">
+              <div className="flex items-center gap-2">
+                <span className="text-lg">{pushEnabled ? '🔔' : '🔕'}</span>
+                <div>
+                  <p className="text-xs font-black text-indigo-900">Practice reminders</p>
+                  <p className="text-[10px] text-indigo-400 font-medium">Daily nudge if you haven&apos;t practiced</p>
+                </div>
+              </div>
+              <button onClick={handleTogglePush} disabled={pushLoading}
+                className={`relative w-11 h-6 rounded-full transition-all duration-200 disabled:opacity-50 ${pushEnabled ? 'bg-indigo-600' : 'bg-indigo-200'}`}>
+                <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow-sm transition-all duration-200 ${pushEnabled ? 'left-6' : 'left-1'}`} />
+              </button>
+            </div>
+
             <ViolinProgress minutesToday={minutesToday} goalMinutes={goalMinutes} />
             <Timer profile={profile} isMock={isMock} onSessionComplete={handleSessionComplete} />
           </>

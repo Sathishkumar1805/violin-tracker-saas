@@ -15,6 +15,7 @@ export interface Profile {
   gems: number;
   timezone: string;            // IANA timezone string, e.g. "America/Chicago"
   family_code: string | null;  // parents only — shareable code for students to join
+  mascot_type: string | null;  // student's chosen mascot animal
   created_at: string;
 }
 
