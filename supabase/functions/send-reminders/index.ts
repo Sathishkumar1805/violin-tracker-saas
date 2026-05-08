@@ -1,123 +1,226 @@
-// Supabase Edge Function — send daily practice reminders via Web Push
+// Supabase Edge Function — send scheduled practice reminders via Web Push
 //
-// Deploy:  supabase functions deploy send-reminders
-// Trigger: Supabase Dashboard → Edge Functions → Cron  (daily at 17:00 UTC)
-//          or Vercel cron → POST https://<project>.supabase.co/functions/v1/send-reminders
+// Deploy:   supabase functions deploy send-reminders
+// Schedule: Supabase Dashboard → Edge Functions → Cron  →  0 * * * *  (every hour)
+//           The function checks each user's local time and sends only when it falls
+//           inside the morning (07–09) or evening (17–19) window.
 //
-// Required env vars (set in Supabase Dashboard → Settings → Edge Functions):
-//   VAPID_PUBLIC_KEY   — from: npx web-push generate-vapid-keys
-//   VAPID_PRIVATE_KEY  — from: npx web-push generate-vapid-keys
-//   VAPID_SUBJECT      — mailto:you@example.com
-//   CRON_SECRET        — a random string to authenticate cron calls
+// Required secrets (Supabase Dashboard → Settings → Edge Functions):
+//   VAPID_PUBLIC_KEY      from: npx web-push generate-vapid-keys
+//   VAPID_PRIVATE_KEY     from: npx web-push generate-vapid-keys
+//   VAPID_SUBJECT         mailto:you@example.com
+//   CRON_SECRET           random string to authenticate cron calls
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 // @ts-ignore — npm: specifier supported in Supabase Deno runtime
 import webpush from 'npm:web-push';
 
-const SUPABASE_URL          = Deno.env.get('SUPABASE_URL')!;
-const SUPABASE_SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const VAPID_PUBLIC_KEY      = Deno.env.get('VAPID_PUBLIC_KEY')!;
-const VAPID_PRIVATE_KEY     = Deno.env.get('VAPID_PRIVATE_KEY')!;
-const VAPID_SUBJECT         = Deno.env.get('VAPID_SUBJECT') ?? 'mailto:support@violintracker.app';
-const CRON_SECRET           = Deno.env.get('CRON_SECRET');
+const SUPABASE_URL         = Deno.env.get('SUPABASE_URL')!;
+const SUPABASE_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+const VAPID_PUBLIC_KEY     = Deno.env.get('VAPID_PUBLIC_KEY')!;
+const VAPID_PRIVATE_KEY    = Deno.env.get('VAPID_PRIVATE_KEY')!;
+const VAPID_SUBJECT        = Deno.env.get('VAPID_SUBJECT') ?? 'mailto:support@violintracker.app';
+const CRON_SECRET          = Deno.env.get('CRON_SECRET');
 
 webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 
-const MASCOT_MESSAGES: Record<string, {
-  title: string;
-  body: (name: string, streak: number) => string;
-}> = {
-  bird:   { title: '🐦 Chirpy needs you!',   body: (n, s) => s > 0 ? `Chirpy is worried! ${n}'s ${s}-day streak is at risk! 😟` : `Chirpy says it's time to practice, ${n}! 🎻` },
-  dog:    { title: '🐶 Buddy is waiting!',    body: (n, s) => s > 0 ? `Buddy is pacing around! Don't break ${n}'s ${s}-day streak! 😟` : `Buddy says: let's practice today, ${n}! 🎻` },
-  cat:    { title: '🐱 Whiskers is worried!', body: (n, s) => s > 0 ? `Whiskers is meowing sadly! ${n}'s ${s}-day streak is at risk! 😟` : `Whiskers says: practice time, ${n}! 🎻` },
-  rabbit: { title: '🐰 Hoppy is hopping!',    body: (n, s) => s > 0 ? `Hoppy can't sit still! ${n}'s ${s}-day streak needs you! 😟` : `Hoppy says: let's practice today, ${n}! 🎻` },
-  bear:   { title: '🐻 Bruno is grumbling!',  body: (n, s) => s > 0 ? `Bruno is grumbling! ${n}'s ${s}-day streak is at risk! 😟` : `Bruno says: time to practice, ${n}! 🎻` },
-  fox:    { title: '🦊 Rusty is fretting!',   body: (n, s) => s > 0 ? `Rusty is worried! ${n}'s ${s}-day streak is at risk! 😟` : `Rusty says: let's play today, ${n}! 🎻` },
-};
+// ── Helpers ───────────────────────────────────────────────────────────────
 
-function toLocalDate(date: Date, timezone: string): string {
-  return date.toLocaleDateString('en-CA', { timeZone: timezone });
+function toLocalDate(date: Date, tz: string): string {
+  return date.toLocaleDateString('en-CA', { timeZone: tz });
 }
 
-function calcStreak(sessions: { started_at: string }[], timezone: string): number {
-  const dates = [...new Set(sessions.map(s => toLocalDate(new Date(s.started_at), timezone)))]
+function localHour(date: Date, tz: string): number {
+  return parseInt(date.toLocaleString('en-US', { timeZone: tz, hour: 'numeric', hour12: false }), 10);
+}
+
+function calcStreak(sessions: { started_at: string }[], tz: string): number {
+  const dates = [...new Set(sessions.map(s => toLocalDate(new Date(s.started_at), tz)))]
     .sort().reverse();
   if (!dates.length) return 0;
-  const yesterday = toLocalDate(new Date(Date.now() - 86_400_000), timezone);
+  const yesterday = toLocalDate(new Date(Date.now() - 86_400_000), tz);
   if (dates[0] !== yesterday) return 0;
-  let streak = 0;
-  let cursor = yesterday;
+  let streak = 0, cursor = yesterday;
   for (const d of dates) {
     if (d !== cursor) break;
     streak++;
     const prev = new Date(`${cursor}T12:00:00`);
     prev.setDate(prev.getDate() - 1);
-    cursor = toLocalDate(prev, timezone);
+    cursor = toLocalDate(prev, tz);
   }
   return streak;
 }
+
+// Returns true if the notification was not already logged (i.e. safe to send).
+// Uses UNIQUE(user_id, type, local_date) to prevent duplicates per day.
+async function canSend(
+  sb: ReturnType<typeof createClient>,
+  userId: string,
+  type: string,
+  localDate: string,
+): Promise<boolean> {
+  const { error } = await sb
+    .from('notification_log')
+    .insert({ user_id: userId, type, local_date: localDate });
+  return !error; // error = UNIQUE violation → already sent today
+}
+
+async function pushAndCleanup(
+  sb: ReturnType<typeof createClient>,
+  subscription: object,
+  userId: string,
+  payload: object,
+): Promise<boolean> {
+  try {
+    await webpush.sendNotification(subscription, JSON.stringify(payload));
+    return true;
+  } catch (err) {
+    if ((err as { statusCode?: number }).statusCode === 410) {
+      await sb.from('push_subscriptions').delete().eq('user_id', userId);
+    }
+    return false;
+  }
+}
+
+// ── Main handler ──────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
   if (CRON_SECRET && req.headers.get('authorization') !== `Bearer ${CRON_SECRET}`) {
     return new Response('Unauthorized', { status: 401 });
   }
 
-  const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+  const sb  = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+  const now = new Date();
+  const since = new Date(Date.now() - 8 * 86_400_000).toISOString();
 
-  // Load all push subscriptions with student profile data
+  // ── Load all push subscriptions with profile data ─────────────────────
+  type Profile = {
+    id: string;
+    display_name: string;
+    role: string;
+    timezone: string;
+    mascot_type: string;
+    parent_id: string | null;
+  };
+
   const { data: subs, error } = await sb
     .from('push_subscriptions')
-    .select('user_id, subscription, profiles(display_name, timezone, mascot_type)');
+    .select('user_id, subscription, profiles(id, display_name, role, timezone, mascot_type, parent_id)');
 
-  if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
-  if (!subs?.length) return new Response(JSON.stringify({ sent: 0, skipped: 0 }), { status: 200 });
+  if (error || !subs?.length) {
+    return new Response(JSON.stringify({ sent: 0, error: error?.message }), { status: 200 });
+  }
 
-  // Load recent sessions for all subscribed students
-  const userIds = subs.map(s => s.user_id);
-  const { data: sessions } = await sb
-    .from('practice_sessions')
-    .select('user_id, started_at')
-    .in('user_id', userIds)
-    .not('ended_at', 'is', null)
-    .gte('started_at', new Date(Date.now() - 8 * 86_400_000).toISOString()); // last 8 days
+  // ── For parent subscribers, load their children's profiles ───────────
+  const parentSubIds = subs
+    .filter(s => (s.profiles as Profile)?.role === 'parent')
+    .map(s => s.user_id);
 
-  const now = new Date();
-  let sent = 0, skipped = 0, errors = 0;
+  type ChildRow = { id: string; display_name: string; timezone: string; mascot_type: string; parent_id: string };
+  const childrenByParent: Record<string, ChildRow[]> = {};
+  const allStudentIds: string[] = subs
+    .filter(s => (s.profiles as Profile)?.role === 'student')
+    .map(s => s.user_id);
 
-  for (const sub of subs) {
-    const profile = sub.profiles as { display_name: string; timezone: string; mascot_type: string } | null;
-    if (!profile) continue;
+  if (parentSubIds.length > 0) {
+    const { data: children } = await sb
+      .from('profiles')
+      .select('id, display_name, timezone, mascot_type, parent_id')
+      .in('parent_id', parentSubIds);
 
-    const tz = profile.timezone ?? 'America/Chicago';
-    const todayLocal = toLocalDate(now, tz);
-    const userSessions = (sessions ?? []).filter(s => s.user_id === sub.user_id);
-
-    // Skip if already practiced today
-    if (userSessions.some(s => toLocalDate(new Date(s.started_at), tz) === todayLocal)) {
-      skipped++; continue;
-    }
-
-    const streak = calcStreak(userSessions, tz);
-    const mascot = profile.mascot_type ?? 'bird';
-    const msg = MASCOT_MESSAGES[mascot] ?? MASCOT_MESSAGES['bird'];
-
-    try {
-      await webpush.sendNotification(
-        sub.subscription,
-        JSON.stringify({ title: msg.title, body: msg.body(profile.display_name, streak) })
-      );
-      sent++;
-    } catch (err) {
-      console.error(`Failed for user ${sub.user_id}:`, err);
-      // Remove stale/expired subscriptions
-      if ((err as { statusCode?: number }).statusCode === 410) {
-        await sb.from('push_subscriptions').delete().eq('user_id', sub.user_id);
-      }
-      errors++;
+    for (const c of (children ?? []) as ChildRow[]) {
+      if (!childrenByParent[c.parent_id]) childrenByParent[c.parent_id] = [];
+      childrenByParent[c.parent_id].push(c);
+      allStudentIds.push(c.id);
     }
   }
 
-  return new Response(JSON.stringify({ sent, skipped, errors }), {
+  // ── Load recent sessions for all students ────────────────────────────
+  const { data: allSessions } = await sb
+    .from('practice_sessions')
+    .select('user_id, started_at')
+    .in('user_id', [...new Set(allStudentIds)])
+    .not('ended_at', 'is', null)
+    .gte('started_at', since);
+
+  const sessionsByUser: Record<string, { started_at: string }[]> = {};
+  for (const s of (allSessions ?? [])) {
+    (sessionsByUser[s.user_id] ??= []).push(s);
+  }
+
+  // ── Process each subscription ─────────────────────────────────────────
+  let sent = 0;
+
+  for (const sub of subs) {
+    const profile = sub.profiles as Profile | null;
+    if (!profile) continue;
+
+    const tz    = profile.timezone ?? 'America/Chicago';
+    const h     = localHour(now, tz);
+    const today = toLocalDate(now, tz);
+
+    const isMorning = h >= 7 && h < 9;
+    const isEvening = h >= 17 && h < 19;
+    if (!isMorning && !isEvening) continue;
+
+    const timeWindow = isMorning ? 'morning' : 'evening';
+
+    // ── Student subscriber ────────────────────────────────────────────
+    if (profile.role === 'student') {
+      const sessions      = sessionsByUser[sub.user_id] ?? [];
+      const practicedToday = sessions.some(s => toLocalDate(new Date(s.started_at), tz) === today);
+      if (practicedToday) continue;
+
+      if (!await canSend(sb, sub.user_id, `student_${timeWindow}`, today)) continue;
+
+      const streak = calcStreak(sessions, tz);
+      const title  = isMorning
+        ? `🌅 Good morning, ${profile.display_name}!`
+        : streak > 0 ? `⏰ Keep your ${streak}-day streak!` : `⏰ Evening reminder`;
+      const body   = isMorning
+        ? `Start your day with some violin practice! 🎻`
+        : streak > 0
+          ? `Don't break your streak, ${profile.display_name}! A few minutes will do! 🎶`
+          : `Hey ${profile.display_name}, there's still time to practice tonight! 🎻`;
+
+      if (await pushAndCleanup(sb, sub.subscription, sub.user_id,
+        { title, body, type: `reminder_${timeWindow}`, url: '/dashboard' })) sent++;
+
+    // ── Parent subscriber ─────────────────────────────────────────────
+    } else if (profile.role === 'parent') {
+      const children = childrenByParent[sub.user_id] ?? [];
+
+      for (const child of children) {
+        const childTz      = child.timezone ?? tz;
+        const childToday   = toLocalDate(now, childTz);
+        const childSessions = sessionsByUser[child.id] ?? [];
+        const childPracticed = childSessions.some(
+          s => toLocalDate(new Date(s.started_at), childTz) === childToday,
+        );
+        if (childPracticed) continue;
+
+        const logKey = `parent_${timeWindow}_${child.id}`;
+        if (!await canSend(sb, sub.user_id, logKey, today)) continue;
+
+        const streak = calcStreak(childSessions, childTz);
+        const title  = isMorning
+          ? `🌅 Morning reminder — ${child.display_name}`
+          : streak > 0
+            ? `⏰ ${child.display_name}'s streak is at risk!`
+            : `⏰ ${child.display_name} hasn't practiced yet`;
+        const body   = isMorning
+          ? `Don't forget to schedule practice time for ${child.display_name} today! 🎻`
+          : streak > 0
+            ? `${child.display_name}'s ${streak}-day streak needs today's session! 🎶`
+            : `${child.display_name} hasn't practiced violin yet today. Still time tonight! 🎻`;
+
+        if (await pushAndCleanup(sb, sub.subscription, sub.user_id,
+          { title, body, type: `reminder_${window}_parent`, url: '/parent' })) sent++;
+      }
+    }
+  }
+
+  return new Response(JSON.stringify({ sent }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
   });

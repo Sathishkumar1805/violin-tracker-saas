@@ -220,3 +220,17 @@ CREATE POLICY "push: own subscriptions"
   ON push_subscriptions FOR ALL
   USING (user_id = get_current_profile_id());
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);
+
+-- ── 11. Notification deduplication log ────────────────────
+-- Prevents the hourly send-reminders edge function from sending the same
+-- notification twice in one day. Only the service role accesses this table.
+CREATE TABLE IF NOT EXISTS notification_log (
+  user_id    UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  type       TEXT NOT NULL,
+  local_date TEXT NOT NULL,  -- YYYY-MM-DD in the user's local timezone
+  sent_at    TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (user_id, type, local_date)
+);
+ALTER TABLE notification_log ENABLE ROW LEVEL SECURITY;
+-- No user-level policies: only the service role (edge functions / API routes) can access.
+CREATE INDEX IF NOT EXISTS idx_notification_log_user ON notification_log(user_id, sent_at);

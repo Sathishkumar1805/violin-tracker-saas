@@ -156,6 +156,16 @@ export default function Timer({ profile, isMock, onSessionComplete }: Props) {
       });
       if (saved) session.id = saved.id;
       await updateGems(profile.id, profile.gems + gems);
+      fetch('/api/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'practice-complete',
+          studentId: profile.id,
+          durationMinutes: Math.round(durSecs / 60),
+          gemsEarned: gems,
+        }),
+      }).catch(() => {});
     }
 
     playDing();
